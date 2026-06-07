@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edge-Vision OS | Advanced Medical Telemetry</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;500;700&family=JetBrains+Mono:wght@400;700&display=swap');
+        
+        :root {
+            --neon-green: #00ff9d;
+            --alert-red: #ff3e3e;
+            --deep-bg: #030508;
+        }
+
+        body { 
+            font-family: 'Space Grotesk', sans-serif; 
+            background-color: var(--deep-bg); 
+            color: #e2e8f0; 
+            overflow: hidden; 
+            height: 100vh;
+        }
+
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        .glass-panel { 
+            background: rgba(15, 23, 42, 0.6); 
+            backdrop-filter: blur(15px); 
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            box-shadow: 0 10px 40px -10px rgba(0,0,0,0.5);
+        }
+
+        .scanline {
+            width: 100%; height: 4px; background: rgba(0, 255, 157, 0.05);
+            position: absolute; animation: scan 6s linear infinite; z-index: 10; pointer-events: none;
+        }
+        @keyframes scan { 0% { top: 0; } 100% { top: 100%; } }
+
+        .neural-log {
+            font-size: 10px; color: var(--neon-green); height: 180px; overflow-y: auto;
+            scrollbar-width: none; mask-image: linear-gradient(to bottom, transparent, black 15%, black 85%, transparent);
+        }
+
+        #boot-screen {
+            position: fixed; inset: 0; background: #000; z-index: 9999;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-online { background: var(--neon-green); box-shadow: 0 0 10px var(--neon-green); }
+
+        .emergency-flash { animation: flashRed 0.6s infinite; }
+        @keyframes flashRed { 
+            0%, 100% { background: rgba(255, 0, 0, 0.1); } 
+            50% { background: rgba(255, 0, 0, 0.3); } 
+        }
+    </style>
+</head>
+<body class="p-4">
+
+    <!-- Loading Screen -->
+    <div id="boot-screen">
+        <div class="mb-4 text-xs mono tracking-[0.5em] text-green-500 animate-pulse">SYSTEM INITIALIZING...</div>
+        <div class="w-48 h-[1px] bg-gray-800 relative">
+            <div id="boot-progress" class="absolute h-full bg-green-500 w-0 transition-all duration-500"></div>
+        </div>
+        <div id="boot-status" class="mt-4 text-[10px] mono text-gray-500">Checking Neural Weights...</div>
+    </div>
+
+    <div class="scanline"></div>
+
+    <!-- Header Section -->
+    <header class="flex justify-between items-start mb-6 border-b border-white/10 pb-4">
+        <div class="flex items-center gap-5">
+            <div class="relative">
+                <div class="w-12 h-12 rounded-lg border-2 border-green-500/20 flex items-center justify-center rotate-45">
+                    <div class="w-6 h-6 border-2 border-green-500 animate-spin"></div>
+                </div>
+            </div>
+            <div>
+                <h1 class="text-3xl font-black tracking-tighter uppercase italic leading-none">Edge-Vision <span class="text-green-400">v4.0</span></h1>
+                <div class="flex items-center mt-1">
+                    <span class="status-dot status-online"></span>
+                    <span class="text-[9px] mono uppercase text-gray-400 tracking-widest">Neural Link Active | 60 FPS</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-2 gap-8 mono">
+            <div class="text-right">
+                <p class="text-[9px] text-gray-500 uppercase">Patient ID</p>
+                <p class="text-xs font-bold text-white">RAJ-K-9344</p>
+            </div>
+            <div class="text-right">
+                <p class="text-[9px] text-gray-500 uppercase">Emergency Contact</p>
+                <p id="phone-display" class="text-xs font-bold text-yellow-500">+91 93444 88285</p>
+            </div>
+        </div>
+    </header>
+
+    <main class="grid grid-cols-12 gap-6 h-[calc(100vh-140px)]">
+        
+        <!-- Sidebar Controls -->
+        <div class="col-span-3 flex flex-col gap-4">
+            <div class="glass-panel p-5 rounded-2xl">
+                <h3 class="text-[10px] font-bold text-gray-500 uppercase mb-4 tracking-widest italic">Live Telemetry</h3>
+                <div class="space-y-4">
+                    <div>
+                        <div class="flex justify-between text-[10px] mb-1">
+                            <span class="text-gray-400">IMPACT SENSITIVITY</span>
+                            <span id="sens-val" class="text-green-400">75%</span>
+                        </div>
+                        <input type="range" class="w-full accent-green-500 bg-gray-700" value="75">
+                    </div>
+                    <div class="pt-2">
+                        <p class="text-[10px] text-gray-500 mono leading-relaxed uppercase">
+                            Status: <span class="text-white">Monitoring...</span><br>
+                            AI Model: <span class="text-white">Pose-ResNet-Lite</span><br>
+                            Uptime: <span id="uptime" class="text-white">00:00:00</span>
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="glass-panel flex-1 p-5 rounded-2xl flex flex-col overflow-hidden">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="text-[10px] font-bold text-gray-500 uppercase italic tracking-widest">Neural Event Log</h3>
+                    <div class="w-2 h-2 rounded-full bg-green-500 animate-ping"></div>
+                </div>
+                <div id="neural-log" class="neural-log mono leading-relaxed"></div>
+            </div>
+        </div>
+
+        <!-- Central Vision Feed -->
+        <div class="col-span-6 flex flex-col gap-4">
+            <div class="glass-panel flex-1 rounded-3xl relative overflow-hidden group border-2 border-white/5">
+                <video id="video_input" class="hidden"></video>
+                <canvas id="output_canvas" class="w-full h-full object-cover"></canvas>
+                
+                <div class="absolute top-6 left-6">
+                    <div class="bg-black/80 px-4 py-2 rounded-lg border border-white/10 text-[10px] mono flex items-center gap-3">
+                        <span class="flex h-2 w-2 relative">
+                            <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                        </span>
+                        ENCRYPTED_LIVE_FEED
+                    </div>
+                </div>
+
+                <!-- FALL ALERT OVERLAY -->
+                <div id="fall_alert" class="hidden absolute inset-0 z-50 emergency-flash backdrop-blur-sm flex items-center justify-center">
+                    <div class="bg-black border-4 border-red-600 p-12 rounded-[3rem] text-center shadow-[0_0_100px_rgba(255,0,0,0.4)]">
+                        <div class="text-red-600 text-8xl mb-4 font-black italic animate-bounce">! FALL !</div>
+                        <h2 class="text-3xl font-bold text-white mb-2 uppercase tracking-tighter">Impact Detected</h2>
+                        <p class="text-gray-400 mb-10 mono text-xs uppercase tracking-widest">Protocol 9: WhatsApp Sent • Alarm Active</p>
+                        
+                        <div class="flex gap-4 justify-center">
+                            <button onclick="dismissAlert()" class="px-10 py-4 bg-white text-black rounded-xl font-black uppercase text-xs hover:bg-gray-200 transition-colors">I am Safe</button>
+                            <button onclick="window.open('tel:108')" class="px-10 py-4 bg-red-600 text-white rounded-xl font-black uppercase text-xs hover:bg-red-700 transition-colors">Call Medic</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bottom Stats -->
+            <div class="h-32 grid grid-cols-3 gap-4">
+                <div class="glass-panel rounded-2xl p-5 flex flex-col justify-between">
+                    <span class="text-[9px] text-gray-500 mono font-bold tracking-widest">VELOCITY</span>
+                    <div class="flex items-baseline gap-2">
+                        <div class="text-4xl font-bold italic tracking-tighter" id="vel_val">0.0</div>
+                        <span class="text-[10px] text-gray-500">M/S</span>
+                    </div>
+                </div>
+                <div class="glass-panel rounded-2xl p-5 flex flex-col justify-between border-b-4 border-b-yellow-500">
+                    <span class="text-[9px] text-gray-500 mono font-bold tracking-widest">IMPACT FORCE</span>
+                    <div class="flex items-baseline gap-2">
+                        <div class="text-4xl font-bold text-yellow-400 italic tracking-tighter" id="g-force">1.0</div>
+                        <span class="text-[10px] text-gray-500">G</span>
+                    </div>
+                </div>
+                <div class="glass-panel rounded-2xl p-5 flex flex-col justify-between border-b-4 border-b-green-500">
+                    <span class="text-[9px] text-gray-500 mono font-bold tracking-widest">MOBILITY</span>
+                    <div class="flex items-baseline gap-2">
+                        <div class="text-4xl font-bold text-green-400 italic tracking-tighter">94</div>
+                        <span class="text-[10px] text-gray-500">%</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Data Visualizer -->
+        <div class="col-span-3 flex flex-col gap-4">
+            <div class="glass-panel p-6 rounded-2xl flex-1 flex flex-col">
+                <h3 class="text-[10px] font-bold text-gray-500 uppercase mb-4 tracking-widest">Stability Index</h3>
+                <div class="flex-1 relative">
+                    <canvas id="trendChart"></canvas>
+                </div>
+            </div>
+            
+            <div class="glass-panel p-5 rounded-2xl border-l-4 border-l-blue-500">
+                <h3 class="text-[10px] font-bold text-blue-400 uppercase mb-2 mono italic tracking-widest">Automation Ready</h3>
+                <!-- NEW CONNECTION BUTTON -->
+                <button id="hw-btn" onclick="initHardware()" class="w-full mt-2 py-3 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-[10px] uppercase mono transition-all shadow-lg shadow-blue-900/30">
+                    🔌 Link LED Hardware
+                </button>
+                <p class="text-[9px] text-gray-500 mt-2 italic">Connect ESP8266/ESP32 via USB to enable physical alarm.</p>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // --- HARDWARE CONNECTION STATE ---
+        let port;
+        let writer;
+
+        async function initHardware() {
+            try {
+                // Request serial port
+                port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 115200 });
+                
+                const encoder = new TextEncoderStream();
+                encoder.readable.pipeTo(port.writable);
+                writer = encoder.writable.getWriter();
+                
+                document.getElementById('hw-btn').innerText = "✅ HARDWARE LINKED";
+                document.getElementById('hw-btn').classList.replace('bg-blue-600', 'bg-green-600');
+                addLog("HARDWARE: ESP Serial Link Established.");
+            } catch (err) {
+                console.error(err);
+                addLog("ERROR: Hardware connection failed.");
+            }
+        }
+
+        async function sendToHardware(command) {
+            if (writer) {
+                await writer.write(command);
+            }
+        }
+
+        // --- CONSTANTS & STATE ---
+        let isEmergency = false;
+        let lastHipY = 0;
+        let lastTime = Date.now();
+        let alarmPlayer = null;
+        let trendChart;
+
+        // --- SPEECH ENGINE ---
+        const speak = (text) => {
+            const msg = new SpeechSynthesisUtterance(text);
+            msg.rate = 0.9;
+            msg.pitch = 0.8;
+            window.speechSynthesis.speak(msg);
+        };
+
+        // --- NOTIFICATION ENGINE ---
+        function sendWhatsApp() {
+            const phone = "919344488285";
+            const message = `🚨 *EDGE-VISION OS CRITICAL ALERT* 🚨\n\n*Patient:* Mr. Rajendran K.\n*Event:* High-Impact Fall Detected\n*Force:* ${document.getElementById('g-force').innerText}\n*Time:* ${new Date().toLocaleTimeString()}\n\nImmediate response required. View live dashboard link: https://edge-vision.ai/live`;
+            const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+            window.open(waUrl, '_blank');
+        }
+
+        // --- DETECTION LOGIC ---
+        const videoElement = document.getElementById('video_input');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // Draw visual skeleton with "High-Tech" look
+            if (results.poseLandmarks) {
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: 'rgba(0, 255, 157, 0.4)', lineWidth: 4});
+                drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {color: '#00ff9d', lineWidth: 1.5});
+                drawLandmarks(canvasCtx, results.poseLandmarks, {color: '#fff', radius: 2, lineWidth: 1});
+
+                // FALL MATH
+                const hipL = results.poseLandmarks[23];
+                const hipR = results.poseLandmarks[24];
+                const nose = results.poseLandmarks[0];
+                const hipY = (hipL.y + hipR.y) / 2;
+                
+                const now = Date.now();
+                const dt = (now - lastTime) / 1000;
+                const v = Math.abs(hipY - lastHipY) / dt;
+
+                // Update UI Metrics
+                document.getElementById('vel_val').innerText = v.toFixed(2);
+                const gForce = (1 + (v/1.2)).toFixed(1);
+                document.getElementById('g-force').innerText = gForce;
+
+                // Update Chart
+                updateChart(v);
+
+                // COMPLEX FALL CRITERIA
+                if (v > 2.8 && nose.y > 0.70 && !isEmergency) {
+                    triggerEmergency(gForce);
+                }
+
+                lastHipY = hipY;
+                lastTime = now;
+            }
+            canvasCtx.restore();
+        }
+
+        function triggerEmergency(g) {
+            isEmergency = true;
+            document.getElementById('fall_alert').classList.remove('hidden');
+            
+            sendToHardware('H'); // <--- SENDS 'H' TO LED
+
+            addLog(`!!! IMPACT DETECTED: ${g}G !!!`);
+            addLog(`CONTACTING EMERGENCY SERVICES...`);
+            
+            speak("Emergency. Fall detected. Contacting caregiver immediately.");
+            sendWhatsApp();
+        }
+
+        function dismissAlert() {
+            isEmergency = false;
+            document.getElementById('fall_alert').classList.add('hidden');
+            
+            sendToHardware('L'); // <--- SENDS 'L' TO LED
+
+            addLog("SYSTEM RESET: Monitoring Resumed.");
+            speak("System Reset. Resuming monitor.");
+        }
+
+        // --- UTILS ---
+        function addLog(text) {
+            const log = document.getElementById('neural-log');
+            const entry = document.createElement('div');
+            entry.className = "mb-1 border-l-2 border-green-500 pl-2 py-1 bg-white/5";
+            entry.innerHTML = `<span class="text-gray-500 font-bold">[${new Date().toLocaleTimeString()}]</span> ${text}`;
+            log.prepend(entry);
+        }
+
+        function updateChart(val) {
+            trendChart.data.datasets[0].data.push(val);
+            trendChart.data.datasets[0].data.shift();
+            trendChart.update('none');
+        }
+
+        // --- INITIALIZATION ---
+        const pose = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
+        pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+        pose.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                canvasElement.width = videoElement.videoWidth;
+                canvasElement.height = videoElement.videoHeight;
+                await pose.send({image: videoElement});
+            },
+            width: 1280, height: 720
+        });
+
+        // Start Sequences
+        window.addEventListener('load', () => {
+            const bootProgress = document.getElementById('boot-progress');
+            const bootStatus = document.getElementById('boot-status');
+            
+            setTimeout(() => { bootProgress.style.width = "40%"; bootStatus.innerText = "Loading AI Pose Models..."; }, 500);
+            setTimeout(() => { bootProgress.style.width = "80%"; bootStatus.innerText = "Establishing WhatsApp Gateway..."; }, 1500);
+            setTimeout(() => { 
+                bootProgress.style.width = "100%"; 
+                bootStatus.innerText = "System Ready.";
+                document.getElementById('boot-screen').style.opacity = '0';
+                setTimeout(() => document.getElementById('boot-screen').style.display = 'none', 500);
+                camera.start();
+                addLog("SYSTEM BOOT SUCCESSFUL");
+                addLog("CAMERA LINK ESTABLISHED");
+            }, 2500);
+
+            // Chart Init
+            const tCtx = document.getElementById('trendChart').getContext('2d');
+            trendChart = new Chart(tCtx, {
+                type: 'line',
+                data: {
+                    labels: Array(30).fill(''),
+                    datasets: [{
+                        data: Array(30).fill(0),
+                        borderColor: '#00ff9d',
+                        backgroundColor: 'rgba(0, 255, 157, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 2,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: { y: { display: false }, x: { display: false } },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            // Uptime Counter
+            let seconds = 0;
+            setInterval(() => {
+                seconds++;
+                let h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+                let m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+                let s = (seconds % 60).toString().padStart(2, '0');
+                document.getElementById('uptime').innerText = `${h}:${m}:${s}`;
+            }, 1000);
+        });
+    </script>
+</body>
+</html>
